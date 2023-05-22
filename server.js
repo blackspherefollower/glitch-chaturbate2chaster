@@ -124,9 +124,12 @@ app.ws("/connect_chaturbate", async (ws, req) => {
     ws.send(msg);
   });
 
+  ws.pingInterval = setInterval(() => ws.ping(), 1000 * 30);
   ws.on("close", function (msg) {
     connected = false;
+    ws.pingInterval = null
   });
+  
 
   try {
     while (connected) {
