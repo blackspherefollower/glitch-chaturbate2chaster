@@ -28,7 +28,7 @@ function pollChaturbate() {
   }
   ws.onmessage = (event) => {
     console.log("onmesage", event.data);
-    logpane.value += "\nonmessage:\n" + JSON.stringify(event)
+    logpane.value += "\nonmessage:\n" + event.data
   };
   ws.onerror = (event) => {
     toggleForm('chaturbateForm', true);
