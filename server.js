@@ -130,7 +130,6 @@ app.ws("/connect_chaturbate", async (ws, req) => {
     ws.pingInterval = null
   });
   
-
   try {
     while (connected) {
       const events = await axios.get(url);
