@@ -6,7 +6,7 @@ const session = require("express-session")({
 });
 const bodyParser = require("body-parser");
 const url = require("url");
-const handlebars = require('express-handlebars');
+const handlebars = require("express-handlebars");
 
 const axios = require("axios");
 
@@ -21,12 +21,15 @@ var expressWs = require("express-ws")(app);
 app.use(express.static("public"));
 app.use(session);
 
-app.set('view engine', 'hbs');
-app.engine('hbs', handlebars.engine({
-  layoutsDir: __dirname + '/views/layouts',
-  extname: '.hbs',
-  defaultLayout: 'index'
-}));
+app.set("view engine", "hbs");
+app.engine(
+  "hbs",
+  handlebars.engine({
+    layoutsDir: __dirname + "/views/layouts",
+    extname: ".hbs",
+    defaultLayout: "index",
+  })
+);
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -115,33 +118,61 @@ app.get("/chaster_callback", async (req, res, next) => {
 
 // express-ws
 app.ws("/connect_chaturbate", async (ws, req) => {
-  console.log(req)
-  
-  let connected = true
+  console.log(req);
+
+  let connected = true;
   let url = req.query.eventToken;
-  
+
   ws.on("message", function (msg) {
+    console.log("onmessage", msg);
     ws.send(msg);
   });
 
   ws.pingInterval = setInterval(() => ws.ping(), 1000 * 30);
   ws.on("close", function (msg) {
     connected = false;
-    ws.pingInterval = null
+    ws.pingInterval = null;
+    console.log("connection closed");
   });
-  
+
+  try {
+    const locks = await axios.get("https://api.chaster.app/locks", {
+      headers: {
+        Authorization: `Bearer ${req.session.chaster_token.access_token}`,
+        accept: "application/json",
+      },
+    });
+    req.session.chaster_locks = locks.data;
+    ws.send(
+      JSON.stringify(
+        req.session.chaster_locks.map((l) => {
+          return {
+            lockId: l["_id"],
+            endDate: l["endDate"],
+            status: l["status"],
+            totalDuration: l["totalDuration"],
+          };
+        })
+      )
+    );
+  } catch (e) {
+    ws.send(JSON.stringify(e));
+    console.log("eer", e);
+  }
+
   try {
     while (connected) {
       const events = await axios.get(url);
       url = events.data.nextUrl;
       console.log(`Got ${(events.data.events || []).length} events!`);
-      if ((events.data.events || []).length > 0) {
+      if (connected && (events.data.events || []).length > 0) {
         console.log(events.data.events);
-        events.data.events.forEach((e) => {
+        events.data.events.forEach(async (e) => {
           ws.send(JSON.stringify(e));
           if ((e.method || "") == "tip") {
             const duration = getDuration(e.object.tip.tokens);
             if (duration > 0 && (req.session.chaster_locks || []).length > 0) {
+              let count = req.session.chaster_locks.length;
               req.session.chaster_locks.forEach(async (l) => {
                 try {
                   await axios.post(
@@ -155,11 +186,43 @@ app.ws("/connect_chaturbate", async (ws, req) => {
                       },
                     }
                   );
+                  ws.send(
+                    JSON.stringify({ lockId: l["_id"], delta: duration })
+                  );
+                  count--;
                 } catch (e) {
                   console.log("eer", e);
                   ws.send(JSON.stringify(e));
+                  count--;
                 }
               });
+              while (count > 0) {
+                await new Promise((r) => setTimeout(r, 50));
+              }
+              try {
+                const locks = await axios.get("https://api.chaster.app/locks", {
+                  headers: {
+                    Authorization: `Bearer ${req.session.chaster_token.access_token}`,
+                    accept: "application/json",
+                  },
+                });
+                req.session.chaster_locks = locks.data;
+                ws.send(
+                  JSON.stringify(
+                    req.session.chaster_locks.map((l) => {
+                      return {
+                        lockId: l["_id"],
+                        endDate: l["endDate"],
+                        status: l["status"],
+                        totalDuration: l["totalDuration"],
+                      };
+                    })
+                  )
+                );
+              } catch (e) {
+                ws.send(JSON.stringify(e));
+                console.log("eer", e);
+              }
             }
           }
         });
