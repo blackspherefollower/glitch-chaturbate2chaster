@@ -13,9 +13,9 @@
     "openid-client": "^5.4.2",
     "body-parser": "^1.20.2",
     "axios": "^1.4.0",
-    "pug": "^3.0.2",
     "qs": "^6.11.2",
-    "express-ws": "^5.0.2"
+    "express-ws": "^5.0.2",
+    "express-handlebars": "^7.0.7"
   },
   "engines": {
     "node": "14.x"

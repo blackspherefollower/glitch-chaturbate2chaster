@@ -1,0 +1,16 @@
+<script src='/script.js'></script>
+
+
+    
+{{#if chaster_login}}
+<form onsubmit="return pollChaturbate()" id="chaturbateForm">
+  <input id="eventToken"/>
+  <button type="submit">Connect Chaturbate</button>
+</form>
+<div id="log"/>
+{{^}}
+<form action="/connect_chaster" method="post">
+  <button type="submit">Login with Chaster</button>
+</form>
+{{/if}}
+      

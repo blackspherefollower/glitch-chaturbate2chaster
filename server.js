@@ -6,6 +6,7 @@ const session = require("express-session")({
 });
 const bodyParser = require("body-parser");
 const url = require("url");
+const handlebars = require('express-handlebars');
 
 const axios = require("axios");
 
@@ -19,7 +20,14 @@ var expressWs = require("express-ws")(app);
 
 app.use(express.static("public"));
 app.use(session);
-app.set("view engine", "pug");
+
+app.set('view engine', 'hbs');
+app.engine('hbs', handlebars.engine({
+  layoutsDir: __dirname + '/views/layouts',
+  extname: '.hbs',
+  defaultLayout: 'index'
+}));
+
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
@@ -42,18 +50,10 @@ function getDuration(tokens) {
 }
 
 app.get("/", (req, res) => {
-  res.render("index", {
+  res.render("main", {
     title: "Hey",
     message: "Hello there!",
     chaster_login: (req.session.chaster_token || "").length != 0,
-  });
-});
-
-app.get("/profile", (req, res) => {
-  res.render("profile", {
-    title: "Hey",
-    message: "Hello there!",
-    token: req.access_token,
   });
 });
 
@@ -115,14 +115,23 @@ app.get("/chaster_callback", async (req, res, next) => {
 
 // express-ws
 app.ws("/connect_chaturbate", async (ws, req) => {
+  console.log(req)
+  
+  let connected = true
+  let url = req.query.eventToken;
+  
   ws.on("message", function (msg) {
     ws.send(msg);
   });
 
-  let url = req.query.eventToken;
-
+  ws.pingInterval = setInterval(() => ws.ping(), 1000 * 30);
+  ws.on("close", function (msg) {
+    connected = false;
+    ws.pingInterval = null
+  });
+  
   try {
-    while (true) {
+    while (connected) {
       const events = await axios.get(url);
       url = events.data.nextUrl;
       console.log(`Got ${(events.data.events || []).length} events!`);
@@ -157,6 +166,7 @@ app.ws("/connect_chaturbate", async (ws, req) => {
       }
     }
   } catch (e) {
+    ws.send(JSON.stringify(e));
     console.log("eer", e);
   }
   ws.close();
