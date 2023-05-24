@@ -52,6 +52,54 @@ function getDuration(tokens) {
   return 0;
 }
 
+function needTokenRefresh(session) {
+  return true; //(session.chaster_token.ttime + session.chaster_token.expires_in) < (new Date().getTime() / 1000)
+}
+
+async function getLocks(session) {
+  const locks = await axios.get("https://api.chaster.app/locks", {
+    headers: {
+      Authorization: `Bearer ${session.chaster_token.access_token}`,
+      accept: "application/json",
+    },
+  });
+  session.chaster_locks = locks.data;
+  console.log(session.chaster_locks);
+}
+
+async function getToken(session, code) {
+  try {
+    let data = {
+      client_secret: process.env.CHASTER_CLIENT_SECRET,
+      client_id: process.env.CHASTER_CLIENT_ID,
+    };
+    if (code !== undefined) {
+      data.grant_type = "authorization_code";
+      data.code = code;
+      data.redirect_uri = `https://${process.env.PROJECT_DOMAIN}.glitch.me/chaster_callback`;
+    } else {
+      data.grant_type = "refresh_token";
+      data.refresh_token = session.chaster_token.refresh_token;
+    }
+    const ttime = new Date().getTime() / 1000;
+    const token = await axios.post(
+      "https://sso.chaster.app/auth/realms/app/protocol/openid-connect/token",
+      qs.stringify(data),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+    session.chaster_token = token.data;
+    session.chaster_token.ttime = ttime;
+    console.log(session.chaster_token);
+  } catch (e) {
+    console.log(e);
+    throw e;
+  }
+}
+
 app.get("/", (req, res) => {
   res.render("main", {
     title: "Hey",
@@ -81,35 +129,11 @@ app.post("/connect_chaster", (req, res, next) => {
 
 app.get("/chaster_callback", async (req, res, next) => {
   console.log("/chaster_callback", req.body, req.query, req.params);
-  const data = {
-    grant_type: "authorization_code",
-    code: req.query.code,
-    client_secret: process.env.CHASTER_CLIENT_SECRET,
-    client_id: process.env.CHASTER_CLIENT_ID,
-    redirect_uri: `https://${process.env.PROJECT_DOMAIN}.glitch.me/chaster_callback`,
-  };
 
   try {
-    const token = await axios.post(
-      "https://sso.chaster.app/auth/realms/app/protocol/openid-connect/token",
-      qs.stringify(data),
-      {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      }
-    );
-    req.session.chaster_token = token.data;
+    await getToken(req.session, req.query.code);
     console.log(req.session.chaster_token);
-
-    const locks = await axios.get("https://api.chaster.app/locks", {
-      headers: {
-        Authorization: `Bearer ${req.session.chaster_token.access_token}`,
-        accept: "application/json",
-      },
-    });
-    req.session.chaster_locks = locks.data;
-    console.log(req.session.chaster_locks);
+    await getLocks(req.session);
   } catch (e) {
     console.log("eer", e);
   }
@@ -136,13 +160,7 @@ app.ws("/connect_chaturbate", async (ws, req) => {
   });
 
   try {
-    const locks = await axios.get("https://api.chaster.app/locks", {
-      headers: {
-        Authorization: `Bearer ${req.session.chaster_token.access_token}`,
-        accept: "application/json",
-      },
-    });
-    req.session.chaster_locks = locks.data;
+    await getLocks(req.session);
     ws.send(
       JSON.stringify(
         req.session.chaster_locks.map((l) => {
@@ -162,70 +180,78 @@ app.ws("/connect_chaturbate", async (ws, req) => {
 
   try {
     while (connected) {
-      const events = await axios.get(url);
-      url = events.data.nextUrl;
-      console.log(`Got ${(events.data.events || []).length} events!`);
-      if (connected && (events.data.events || []).length > 0) {
-        console.log(events.data.events);
-        events.data.events.forEach(async (e) => {
-          ws.send(JSON.stringify(e));
-          if ((e.method || "") == "tip") {
-            const duration = getDuration(e.object.tip.tokens);
-            if (duration > 0 && (req.session.chaster_locks || []).length > 0) {
-              let count = req.session.chaster_locks.length;
-              req.session.chaster_locks.forEach(async (l) => {
+      try {
+        const events = await axios.get(url);
+        url = events.data.nextUrl;
+        console.log(`Got ${(events.data.events || []).length} events!`);
+        if (connected && (events.data.events || []).length > 0) {
+          console.log(events.data.events);
+          events.data.events.forEach(async (e) => {
+            ws.send(JSON.stringify(e));
+            if ((e.method || "") == "tip") {
+              const duration = getDuration(e.object.tip.tokens);
+              if (
+                duration > 0 &&
+                (req.session.chaster_locks || []).length > 0
+              ) {
                 try {
-                  await axios.post(
-                    `https://api.chaster.app/locks/${l["_id"]}/update-time`,
-                    { duration },
-                    {
-                      headers: {
-                        Authorization: `Bearer ${req.session.chaster_token.access_token}`,
-                        accept: "application/json",
-                        "Content-Type": "application/json",
-                      },
+                  if (needTokenRefresh(req.session)) {
+                    await getToken(req.session);
+                  }
+
+                  let count = req.session.chaster_locks.length;
+                  req.session.chaster_locks.forEach(async (l) => {
+                    try {
+                      await axios.post(
+                        `https://api.chaster.app/locks/${l["_id"]}/update-time`,
+                        { duration },
+                        {
+                          headers: {
+                            Authorization: `Bearer ${req.session.chaster_token.access_token}`,
+                            accept: "application/json",
+                            "Content-Type": "application/json",
+                          },
+                        }
+                      );
+                      ws.send(
+                        JSON.stringify({ lockId: l["_id"], delta: duration })
+                      );
+                      count--;
+                    } catch (e) {
+                      console.log("eer", e);
+                      ws.send(JSON.stringify(e));
+                      count--;
                     }
-                  );
+                  });
+                  while (count > 0) {
+                    await new Promise((r) => setTimeout(r, 50));
+                  }
+                  await getLocks(req.session);
                   ws.send(
-                    JSON.stringify({ lockId: l["_id"], delta: duration })
+                    JSON.stringify(
+                      req.session.chaster_locks.map((l) => {
+                        return {
+                          lockId: l["_id"],
+                          endDate: l["endDate"],
+                          status: l["status"],
+                          totalDuration: l["totalDuration"],
+                        };
+                      })
+                    )
                   );
-                  count--;
                 } catch (e) {
-                  console.log("eer", e);
                   ws.send(JSON.stringify(e));
-                  count--;
+                  console.log("eer", e);
                 }
-              });
-              while (count > 0) {
-                await new Promise((r) => setTimeout(r, 50));
-              }
-              try {
-                const locks = await axios.get("https://api.chaster.app/locks", {
-                  headers: {
-                    Authorization: `Bearer ${req.session.chaster_token.access_token}`,
-                    accept: "application/json",
-                  },
-                });
-                req.session.chaster_locks = locks.data;
-                ws.send(
-                  JSON.stringify(
-                    req.session.chaster_locks.map((l) => {
-                      return {
-                        lockId: l["_id"],
-                        endDate: l["endDate"],
-                        status: l["status"],
-                        totalDuration: l["totalDuration"],
-                      };
-                    })
-                  )
-                );
-              } catch (e) {
-                ws.send(JSON.stringify(e));
-                console.log("eer", e);
               }
             }
-          }
-        });
+          });
+        }
+      } catch (e) {
+        if (e.response && e.response.status >= 500 && e.response.status < 600) {
+          continue;
+        }
+        throw e;
       }
     }
   } catch (e) {
